@@ -8,7 +8,7 @@ FRONTEND = ROOT / "frontend"
 
 BACKEND_CMD = (
     "Set-Location '{backend}'; "
-    ".venv\\Scripts\\Activate.ps1; "
+    ".\\.venv\\Scripts\\Activate.ps1; "
     "python -m uvicorn app.main:app --reload --port 8000"
 ).format(backend=BACKEND)
 

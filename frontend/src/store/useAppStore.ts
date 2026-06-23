@@ -34,17 +34,21 @@ export interface ChatMessage {
 export interface LogEntry {
   id: string;
   timestamp: number;
-  type: 'api' | 'ai';
+  type: 'api' | 'ai' | 'server';
   // API calls
   method?: string;
   url?: string;
   status?: number;
-  duration: number;  // ms
+  duration?: number;  // ms
   requestPreview?: string;   // truncated to ~200 chars
   responsePreview?: string;  // truncated to ~300 chars
   error?: string;
   // AI calls
   model?: string;
+  // Server logs
+  level?: string;
+  logger?: string;
+  message?: string;
 }
 
 export interface DiffResult {

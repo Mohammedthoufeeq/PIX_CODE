@@ -435,5 +435,9 @@ export async function getMotivationalQuote() {
   return request<{ quote: string }>('/api/quote');
 }
 
+export async function getServerLogs() {
+  return request<{ logs: any[] }>('/api/logs');
+}
+
 
 

@@ -30,6 +30,7 @@ import {
   Cpu,
   AlertCircle,
   Clock,
+  Terminal,
 } from 'lucide-react';
 import { useAppStore, ChatMessage, LogEntry } from '../store/useAppStore';
 import * as api from '../api/client';
@@ -440,26 +441,59 @@ const MessageContent: React.FC<{ content: string; isUser: boolean }> = ({ conten
 
 const LogPanel: React.FC = () => {
   const { logs, clearLogs } = useAppStore();
+  const [serverLogs, setServerLogs] = useState<LogEntry[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [clearedTime, setClearedTime] = useState<number>(0);
 
-  if (logs.length === 0) {
+  const fetchServerLogs = useCallback(() => {
+    api.getServerLogs().then((res) => {
+      if (res.success && res.data?.logs) {
+        setServerLogs(res.data.logs as LogEntry[]);
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    fetchServerLogs();
+    const interval = setInterval(fetchServerLogs, 5000);
+    return () => clearInterval(interval);
+  }, [fetchServerLogs]);
+
+  const handleClear = () => {
+    clearLogs();
+    setClearedTime(Date.now());
+  };
+
+  const combinedLogs = [...logs, ...serverLogs]
+    .filter((log) => log.timestamp > clearedTime)
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+  if (combinedLogs.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-center px-8">
         <ScrollText size={28} className="text-[#30363d] mb-2" />
         <p className="text-xs text-[#8b949e]">No activity logged yet.</p>
-        <p className="text-[10px] text-[#484f58] mt-1">API calls and AI requests will appear here.</p>
+        <p className="text-[10px] text-[#484f58] mt-1">API calls, AI requests, and Server logs will appear here.</p>
       </div>
     );
   }
+
+  const levelColors: Record<string, string> = {
+    ERROR: 'bg-red-500/10 border border-red-500/30 text-red-400',
+    WARN: 'bg-amber-500/10 border border-amber-500/30 text-amber-400',
+    WARNING: 'bg-amber-500/10 border border-amber-500/30 text-amber-400',
+    DEBUG: 'bg-blue-500/10 border border-blue-500/30 text-blue-400',
+    INFO: 'bg-gray-500/10 border border-gray-500/30 text-gray-400',
+  };
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-[#30363d]">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-[#8b949e]">
-          {logs.length} event{logs.length !== 1 ? 's' : ''}
+          {combinedLogs.length} event{combinedLogs.length !== 1 ? 's' : ''}
         </span>
         <button
-          onClick={clearLogs}
+          onClick={handleClear}
           className="flex items-center gap-1 text-[9px] text-[#8b949e] hover:text-[#f85149] transition-colors px-1.5 py-0.5 rounded hover:bg-[#f85149]/10"
         >
           <Trash2 size={10} />
@@ -467,13 +501,18 @@ const LogPanel: React.FC = () => {
         </button>
       </div>
       <div className="flex-1 overflow-y-auto scrollbar-thin py-1 space-y-px px-1">
-        {logs.map((log) => {
+        {combinedLogs.map((log) => {
           const isExpanded = expanded === log.id;
-          const isError = !!log.error;
+          const isServer = log.type === 'server';
+          const isError = isServer ? log.level === 'ERROR' : !!log.error;
           const isAi = log.type === 'ai';
           const time = new Date(log.timestamp).toLocaleTimeString(undefined, {
             hour: '2-digit', minute: '2-digit', second: '2-digit',
           });
+
+          const badgeColorCls = isServer
+            ? (levelColors[log.level || 'INFO'] ?? 'bg-gray-500/10 border border-gray-500/30 text-gray-400')
+            : '';
 
           return (
             <button
@@ -488,7 +527,11 @@ const LogPanel: React.FC = () => {
               {/* Row */}
               <div className="flex items-center gap-2">
                 {/* Type badge */}
-                {isAi ? (
+                {isServer ? (
+                  <span className={`flex-shrink-0 flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded font-mono font-bold ${badgeColorCls}`}>
+                    <Terminal size={9} /> {log.level || 'INFO'}
+                  </span>
+                ) : isAi ? (
                   <span className="flex-shrink-0 flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded bg-[#b026ff]/10 border border-[#b026ff]/30 text-[#b026ff] font-mono font-bold">
                     <Cpu size={9} /> AI
                   </span>
@@ -504,22 +547,30 @@ const LogPanel: React.FC = () => {
                 )}
 
                 {/* Status */}
-                {log.status && (
+                {!isServer && log.status && (
                   <span className={`text-[9px] font-mono ${log.status >= 400 ? 'text-[#f85149]' : 'text-[#8b949e]'}`}>
                     {log.status}
                   </span>
                 )}
 
-                {/* URL / model */}
+                {/* URL / model / message */}
                 <span className="flex-1 text-[10px] text-[#c9d1d9] truncate font-mono">
-                  {isAi ? (log.model || 'model') : (log.url || '')}
+                  {isServer ? (
+                    <span className="text-[#8b949e]">{log.logger ? `[${log.logger}] ` : ''}<span className="text-[#c9d1d9]">{log.message}</span></span>
+                  ) : isAi ? (
+                    log.model || 'model'
+                  ) : (
+                    log.url || ''
+                  )}
                 </span>
 
                 {/* Duration */}
-                <span className="flex-shrink-0 flex items-center gap-0.5 text-[9px] text-[#484f58]">
-                  <Clock size={9} />
-                  {log.duration < 1000 ? `${log.duration}ms` : `${(log.duration / 1000).toFixed(1)}s`}
-                </span>
+                {!isServer && log.duration !== undefined && (
+                  <span className="flex-shrink-0 flex items-center gap-0.5 text-[9px] text-[#484f58]">
+                    <Clock size={9} />
+                    {log.duration < 1000 ? `${log.duration}ms` : `${(log.duration / 1000).toFixed(1)}s`}
+                  </span>
+                )}
 
                 {/* Error indicator */}
                 {isError && <AlertCircle size={11} className="flex-shrink-0 text-[#f85149]" />}
@@ -531,25 +582,36 @@ const LogPanel: React.FC = () => {
               {/* Expanded details */}
               {isExpanded && (
                 <div className="mt-2 space-y-1.5" onClick={(e) => e.stopPropagation()}>
-                  {log.requestPreview && (
+                  {isServer ? (
                     <div>
-                      <span className="text-[9px] uppercase tracking-wider text-[#8b949e] font-semibold">Request</span>
-                      <pre className="mt-0.5 text-[10px] text-[#c9d1d9] font-mono bg-[#0d1117] rounded p-1.5 overflow-x-auto scrollbar-thin whitespace-pre-wrap border border-[#30363d]">
-                        {log.requestPreview}
+                      <span className="text-[9px] uppercase tracking-wider text-[#8b949e] font-semibold">Log Output</span>
+                      <pre className="mt-0.5 text-[10px] font-mono bg-[#0d1117] rounded p-1.5 overflow-x-auto scrollbar-thin whitespace-pre-wrap border border-[#30363d] text-[#c9d1d9]">
+                        {log.message}
                       </pre>
                     </div>
-                  )}
-                  {(log.responsePreview || log.error) && (
-                    <div>
-                      <span className="text-[9px] uppercase tracking-wider text-[#8b949e] font-semibold">
-                        {log.error ? 'Error' : 'Response'}
-                      </span>
-                      <pre className={`mt-0.5 text-[10px] font-mono bg-[#0d1117] rounded p-1.5 overflow-x-auto scrollbar-thin whitespace-pre-wrap border ${
-                        log.error ? 'text-[#f85149] border-[#f85149]/20' : 'text-[#c9d1d9] border-[#30363d]'
-                      }`}>
-                        {log.error || log.responsePreview}
-                      </pre>
-                    </div>
+                  ) : (
+                    <>
+                      {log.requestPreview && (
+                        <div>
+                          <span className="text-[9px] uppercase tracking-wider text-[#8b949e] font-semibold">Request</span>
+                          <pre className="mt-0.5 text-[10px] text-[#c9d1d9] font-mono bg-[#0d1117] rounded p-1.5 overflow-x-auto scrollbar-thin whitespace-pre-wrap border border-[#30363d]">
+                            {log.requestPreview}
+                          </pre>
+                        </div>
+                      )}
+                      {(log.responsePreview || log.error) && (
+                        <div>
+                          <span className="text-[9px] uppercase tracking-wider text-[#8b949e] font-semibold">
+                            {log.error ? 'Error' : 'Response'}
+                          </span>
+                          <pre className={`mt-0.5 text-[10px] font-mono bg-[#0d1117] rounded p-1.5 overflow-x-auto scrollbar-thin whitespace-pre-wrap border ${
+                            log.error ? 'text-[#f85149] border-[#f85149]/20' : 'text-[#c9d1d9] border-[#30363d]'
+                          }`}>
+                            {log.error || log.responsePreview}
+                          </pre>
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               )}

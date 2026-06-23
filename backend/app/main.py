@@ -24,6 +24,49 @@ from app.models import (
 )
 from app.pix_gateway import call_pix, convert_messages_to_pix_prompt
 from app.routes import agent, chat, files, git, projects, settings
+import logging
+import os
+import re
+import datetime
+from fastapi import Request
+
+# ── Logging setup ────────────────────────────────────────────────────────────
+
+def setup_logging():
+    os.makedirs("logs", exist_ok=True)
+    log_file = "logs/maintenance.log"
+    
+    formatter = logging.Formatter(
+        fmt="%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    file_handler.setLevel(logging.DEBUG)
+    
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    
+    # Remove existing handlers to avoid duplicates
+    for h in root_logger.handlers[:]:
+        root_logger.removeHandler(h)
+    root_logger.addHandler(file_handler)
+    
+    # Console output
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    console_handler.setLevel(logging.INFO)
+    root_logger.addHandler(console_handler)
+    
+    # Force propagation on loggers
+    for logger_name in ("uvicorn", "uvicorn.access", "uvicorn.error", "app"):
+        l = logging.getLogger(logger_name)
+        l.handlers = []
+        l.propagate = True
+
+setup_logging()
+logger = logging.getLogger("app.main")
 
 # ── Create app ─────────────────────────────────────────────────────────────
 
@@ -47,6 +90,89 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Middleware for Request & Error Logging ─────────────────────────────────
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    client_ip = request.client.host if request.client else "unknown"
+    start_time = time.time()
+    
+    # Skip logging the logs endpoint itself to avoid circular spam loops
+    is_polling_logs = request.url.path == "/api/logs"
+    
+    try:
+        response = await call_next(request)
+        duration = int((time.time() - start_time) * 1000)
+        
+        if not is_polling_logs:
+            logger.info(
+                f"{client_ip} - \"{request.method} {request.url.path}\" "
+                f"{response.status_code} - {duration}ms"
+            )
+        return response
+    except Exception as exc:
+        duration = int((time.time() - start_time) * 1000)
+        import traceback
+        tb = traceback.format_exc()
+        logger.error(
+            f"{client_ip} - \"{request.method} {request.url.path}\" 500 "
+            f"- {duration}ms - Exception: {exc}\n{tb}"
+        )
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Internal Server Error: {exc}"}
+        )
+
+# ── Server Logs Endpoint ────────────────────────────────────────────────────
+
+@app.get("/api/logs")
+async def get_server_logs(limit: int = 150) -> dict:
+    """Return the last `limit` log entries from the maintenance.log file."""
+    log_file = "logs/maintenance.log"
+    if not os.path.exists(log_file):
+        return {"logs": []}
+        
+    pattern = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \[([A-Z]+)\] \[([^\]]+)\] (.*)$")
+    entries = []
+    
+    try:
+        with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+            
+        last_lines = lines[-limit:]
+        
+        for line in last_lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            match = pattern.match(line)
+            if match:
+                timestamp_str, level, logger_name, message = match.groups()
+                try:
+                    dt = datetime.datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+                    timestamp = int(dt.timestamp() * 1000)
+                except Exception:
+                    timestamp = int(time.time() * 1000)
+                    
+                entries.append({
+                    "id": f"srv-{timestamp}-{hash(line) % 100000}",
+                    "timestamp": timestamp,
+                    "type": "server",
+                    "level": level,
+                    "logger": logger_name,
+                    "message": message
+                })
+            else:
+                # If a line doesn't match (e.g. multiline stacktrace), append it to the previous entry's message
+                if entries:
+                    entries[-1]["message"] += "\n" + line
+    except Exception as e:
+        return {"error": str(e), "logs": []}
+        
+    return {"logs": entries}
 
 # ── Mount routers ──────────────────────────────────────────────────────────
 
